@@ -1,0 +1,8 @@
+# Per-server notes stay on the server (they describe your setup); only the template is shared.
+notes/*
+!notes/template.md
+# Local one-off scripts, secrets and outputs
+*-oneoff/
+config.env
+*.txt
+__pycache__/

@@ -1,0 +1,13 @@
+[Unit]
+Description=vps-health Telegram bot (applies approved fixes)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/vps-health/config.env
+ExecStart=/usr/bin/python3 /opt/vps-health/vpshealth.py bot
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

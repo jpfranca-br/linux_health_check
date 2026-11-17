@@ -1,0 +1,10 @@
+[Unit]
+Description=vps-health weekly check-up (Claude diagnostics + Telegram report)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/vps-health/config.env
+ExecStart=/usr/bin/python3 /opt/vps-health/vpshealth.py weekly
+TimeoutStartSec=30min
