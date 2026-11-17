@@ -15,8 +15,19 @@ if [ -f /var/run/reboot-required ]; then echo "YES"; cat /var/run/reboot-require
 
 sec "PENDING APT UPDATES"
 run apt-get update -qq >/dev/null
-run apt list --upgradable 2>/dev/null | grep -v '^Listing'
-echo "Security updates: $(apt list --upgradable 2>/dev/null | grep -c -- '-security')"
+# Simulate the real upgrade: `apt list --upgradable` also lists phased updates that apt won't install yet.
+sim="$(apt-get -s -o Debug::NoLocking=1 --with-new-pkgs upgrade 2>/dev/null)"
+block() { awk -v h="$1" 'index($0,h){f=1;next} f&&/^  /{for(i=1;i<=NF;i++)print "  "$i;next} {f=0}' <<<"$sim"; }
+inst="$(grep '^Inst ' <<<"$sim")"
+echo "Installable updates: $(grep -c . <<<"$inst")"
+echo "Security updates (installable): $(grep -c -- '-security' <<<"$inst")"
+[ -n "$inst" ] && awk '{print "  "$2, $3, $4, $5}' <<<"$inst"
+phased="$(block 'deferred due to phasing')"
+echo "Phased updates (Ubuntu rolls these out gradually; apt will NOT install them yet, not an issue): $(grep -c . <<<"$phased")"
+[ -n "$phased" ] && echo "$phased"
+kept="$(block 'kept back')"
+echo "Kept back (need manual apt install / full-upgrade): $(grep -c . <<<"$kept")"
+[ -n "$kept" ] && echo "$kept"
 
 sec "UNATTENDED-UPGRADES (last lines)"
 tail -n 15 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null || echo "no log"

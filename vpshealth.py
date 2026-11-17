@@ -193,6 +193,17 @@ def collect(units):
     return head + p.stdout + (("\n[collector stderr]\n" + p.stderr[-2000:]) if p.stderr.strip() else "")
 
 
+def apt_counts():
+    """(installable, phased) from a simulated upgrade. `apt list --upgradable` would also count
+    phased updates, which apt deliberately holds back, so fixing them is impossible."""
+    out = subprocess.run(["apt-get", "-s", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade"],
+                         capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}).stdout
+    installable = len(re.findall(r"^Inst ", out, re.M))
+    m = re.search(r"deferred due to phasing:\n((?:  .*\n)+)", out)
+    phased = len(m.group(1).split()) if m else 0
+    return installable, phased
+
+
 def failed_units():
     out = subprocess.run(["systemctl", "--failed", "--no-legend", "--plain"], capture_output=True, text=True).stdout
     return [l.split()[0].removesuffix(".service") for l in out.splitlines() if l.strip()]
@@ -218,11 +229,13 @@ issue unless the snapshot shows it changed or got worse.
 Below is this week's health snapshot. Diagnose it like an experienced Linux admin:
 updates (esp. security), reboot needs, memory/swap/OOM, disk/inodes, failed or flapping services,
 log errors worth caring about, SSH brute force, certificates, time sync. Ignore harmless noise.
+Updates: only "Installable updates" can be fixed with apt_upgrade. Phased updates are held back by
+Ubuntu on purpose and install by themselves later: mention them at most briefly, never as a problem.
 In LOCAL HTTP CHECKS any HTTP status (even 404) means the app answers; 000 means no answer.
 
 Return JSON matching the schema:
 - summary: a concise overview for Telegram in {lang}, plain text (no markdown), max ~15 short lines,
-  emoji bullets, include the key numbers (pending/security updates, RAM, disk %, failed units).
+  emoji bullets, include the key numbers (installable/security updates, RAM, disk %, failed units).
 - actions: ONLY fixes from this catalogue that are actually useful now (empty list if nothing to do):
 {catalog}
   restart_service needs "arg" = one of: {services}
@@ -263,8 +276,8 @@ def analyse(data, units):
 def fallback_plan(data, err, units):
     """Simple rules used when Claude is unavailable."""
     acts, manual = [], [f"AI analysis failed: {err}"[:300]]
-    m = re.search(r"Security updates: (\d+)", data)
-    pending = len(re.findall(r"^\S+/\S+ .*upgradable from", data, re.M))
+    m = re.search(r"Security updates \(installable\): (\d+)", data)
+    pending = int((re.search(r"Installable updates: (\d+)", data) or [0, 0])[1])
     if pending:
         acts.append({"id": "apt_upgrade", "reason": f"{pending} updates pending"})
     for u in failed_units():
@@ -274,7 +287,7 @@ def fallback_plan(data, err, units):
     disk = max([int(x) for x in re.findall(r"\s(\d+)% /", data)] or [0])
     mem = re.search(r"Mem:\s+(\S+)\s+(\S+)", data)
     summary = (f"⚠️ AI unavailable, basic checks only\n"
-               f"📦 Updates pending: {pending} (security: {m.group(1) if m else '?'})\n"
+               f"📦 Installable updates: {pending} (security: {m.group(1) if m else '?'})\n"
                f"💾 Disk /: {disk}%\n🧠 RAM used: {mem.group(2) if mem else '?'} of {mem.group(1) if mem else '?'}\n"
                f"❌ Failed units: {', '.join(failed_units()) or 'none'}\n🔄 Reboot required: {'yes' if reboot else 'no'}")
     return {"status": "attention", "summary": summary, "actions": acts, "reboot_recommended": reboot,
@@ -320,6 +333,8 @@ def weekly():
         log("analysis failed:", e)
         plan = fallback_plan(data, e, units)
     plan["actions"] = sanitize(plan.get("actions"), units)
+    if apt_counts()[0] == 0:  # nothing apt would actually install (e.g. only phased updates)
+        plan["actions"] = [a for a in plan["actions"] if a["id"] != "apt_upgrade"]
     plan["created"] = time.time()
     with open(os.path.join(HISTORY, f"{stamp}.json"), "w") as f:
         json.dump(plan, f, indent=1)
@@ -379,12 +394,11 @@ def apply_plan(plan):
                       + (f"\n   {tail[:300]}" if tail and not ok else ""))
     # after-check
     reboot_req = os.path.exists("/var/run/reboot-required")
-    upg = subprocess.run("apt list --upgradable 2>/dev/null | grep -vc '^Listing'", shell=True,
-                         capture_output=True, text=True).stdout.strip()
+    upg, phased = apt_counts()
     failed = failed_units()
     svc = ", ".join(f"{s} {'🟢' if subprocess.run(['systemctl', 'is-active', '--quiet', s]).returncode == 0 else '🔴'}"
                     for s in watched())
-    report += ["", f"Updates still pending: {upg}", f"Failed units: {', '.join(failed) or 'none'}",
+    report += ["", f"Updates still installable: {upg}" + (f" (+{phased} phased, Ubuntu releases them later)" if phased else ""), f"Failed units: {', '.join(failed) or 'none'}",
                f"Services: {svc}", f"Reboot required now: {'yes' if reboot_req else 'no'}"]
     return "\n".join(report), reboot_req
 
